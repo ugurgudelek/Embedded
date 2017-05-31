@@ -1,0 +1,215 @@
+NAMEREG s3, led_stat
+NAMEREG s4, which_led_on_reg
+NAMEREG s5, blink_this_reg
+
+NAMEREG s1, duty_cycle_reg
+NAMEREG s2, direction_reg
+
+NAMEREG sA, delayA_reg
+NAMEREG sB, delayB_reg
+
+NAMEREG sD, delay_reg
+
+NAMEREG sF, temp_reg
+
+CONSTANT led_port,00
+
+
+
+
+
+LOAD duty_cycle_reg, FF
+LOAD direction_reg,00
+LOAD which_led_on_reg, 01
+JUMP main
+
+;==========SUBROUTINES=================
+
+; loop until delay_reg is zero
+;2 INST*delay_reg
+delay_reg_loop:	
+	SUB delay_reg,  01
+	JUMP NZ,	    delay_reg_loop
+	RETURN
+	
+;keep led off	
+led_off: 	 
+	LOAD led_stat, 00
+	OUTPUT led_stat, led_port
+	RETURN
+	
+;set led on wrt blink_this_reg
+led_on:
+	LOAD led_stat, blink_this_reg
+	OUTPUT led_stat, led_port
+	RETURN
+
+;calls led_on function and wait wrt duty_cycle_reg
+led_on_wait:
+	CALL led_on
+	LOAD delay_reg, duty_cycle_reg
+	CALL delay_reg_loop
+	RETURN
+
+;calls led_off function and wait wrt FF-duty_cycle_reg	
+led_off_wait:
+	CALL led_off
+	LOAD delay_reg, FF
+	SUB delay_reg,  duty_cycle_reg
+	CALL delay_reg_loop
+	RETURN
+
+;apply PWM on blink_this_reg led and iterate next led in the direction of MSB
+go_to_msb:
+	CALL led_on_wait; set led on and wait
+	CALL led_off_wait; set led off and wait
+	SR0 blink_this_reg; shift blink_this_reg right
+	SR0 duty_cycle_reg; divide duty_cycle_reg by 2
+	SR0 duty_cycle_reg; divide duty_cycle_reg by 2
+	RETURN
+
+;apply PWM on blink_this_reg led and iterate next led in the direction of LSB
+go_to_lsb:
+	CALL led_on_wait; set led on and wait
+	CALL led_off_wait; set led off and wait
+	SL0 blink_this_reg; shift blink_this_reg left
+	SR0 duty_cycle_reg; divide duty_cycle_reg by 2
+	SR0 duty_cycle_reg; divide duty_cycle_reg by 2
+	RETURN
+	
+;this function does nearly everything we want.
+;it is a one loop of apply PWM to 3-LED.
+one_period:
+	 	 
+	LOAD blink_this_reg, which_led_on_reg; we do not want to change which_led_on_reg so lets save it
+	LOAD duty_cycle_reg,FF; start duty cycle with FF
+	
+	;blink current led according to direction
+	COMPARE direction_reg,00
+	CALL Z, go_to_msb
+	COMPARE direction_reg,FF
+	CALL Z, go_to_lsb
+	
+	;blink current+-1 led according to direction
+	COMPARE direction_reg,00
+	CALL Z, go_to_msb
+	COMPARE direction_reg,FF
+	CALL Z, go_to_lsb
+	
+	;blink current+-2 led according to direction
+	COMPARE direction_reg,00
+	CALL Z, go_to_msb
+	COMPARE direction_reg,FF
+	CALL Z, go_to_lsb
+	
+	
+	RETURN
+
+;this thread function simply a delay function
+;it's loop's time nearly equals to [FF-delayA_reg]*[FF-delayB_reg]*[Instruction of 'one_period' function]*[2 clock per instruction]
+thread:
+	LOAD delayA_reg,00  ;count FF - 00 = FF || 255'd
+	LOAD delayB_reg,FA  ;count FF - FA = 05 || 5'd
+	thread_delay:
+	
+		;our main process function
+		CALL one_period
+	
+		;start of delay part
+		ADD delayA_reg, 01
+		JUMP NZ, 	    thread_delay
+		ADD delayB_reg, 01
+		JUMP NZ, 	    thread_delay
+		;end of delay part
+		
+		
+		;if we are on left-most bit
+		COMPARE which_led_on_reg,01; if LSB == 1
+		CALL Z, check_for_change_direction_to_msb ; if direction is to_msb dont change direction
+		
+		;if we are on right-most bit
+		COMPARE which_led_on_reg,80 ; if MSB == 1
+		CALL Z, check_for_change_direction_to_lsb; if direction is to_lsb dont change direction
+		
+		;update which_led_on_reg according to direction_reg
+		COMPARE direction_reg, 00
+		JUMP Z, go_left; true
+		;false
+		RR which_led_on_reg
+		RETURN
+		go_left:		
+			RL which_led_on_reg ;select next led on every iteration
+			RETURN
+		
+
+check_for_change_direction_to_msb:		
+		COMPARE direction_reg, FF
+		JUMP Z, change_direction
+		RETURN
+		
+check_for_change_direction_to_lsb:	
+		COMPARE direction_reg, 00
+		JUMP Z, change_direction
+		RETURN
+
+change_direction:
+		COMPARE direction_reg, FF
+		JUMP Z, direction_00 ; equal
+		;not equal
+		LOAD direction_reg,FF ; direction_reg already FF so we can omit this line
+		RETURN
+	direction_00:
+			LOAD direction_reg,00
+			RETURN
+
+
+	
+;==========SUBROUTINES=================
+
+;============MAIN======================
+
+; one period of PWM
+; it takes 4u sec to complete
+main: 
+	
+	CALL thread ; 
+
+	JUMP main ;infinite loop
+	
+;============MAIN======================
+
+
+
+;; 255*255*190 ~= 12.5M
+;; delay routine has 2 INST so 25M INST in total we have
+;; 1INST = 2clock cycle so 50M clock cycle we have
+;; device frequency is 100Mhz so that 50M clock took 0.5 sec.
+;; half cycle took 0.5 sec => full cycle 1sec. :)
+;delay_500msec:
+;	LOAD delayA_reg,00  ;count FF - 00 = FF || 255'd
+;	LOAD delayB_reg,00  ;count FF - 00 = FF || 255'd
+;	LOAD delayC_reg,41  ;count FF - 41 = BE || 190'd
+;	; delay_sec ~= (FF-delayA_reg)*(FF-delayB_reg)*(FF-delayC_reg)*2*2/100M sec
+;	delay:
+;		ADD delayA_reg, 01
+;		JUMP NZ, 	    delay
+;		ADD delayB_reg, 01
+;		JUMP NZ, 	    delay
+;		ADD delayC_reg, 01
+;		JUMP NZ, 	    delay	
+;		RETURN
+;
+;		
+;; 50clk_cycle = 1u sec
+;; 25INST = 50clk_cycle
+;delay_1micro_sec:
+;	LOAD delay_usec_reg,0C  ;12'd
+;delay_1micro_sec_loop:
+;	SUB delay_usec_reg,01
+;	JUMP NZ, delay_1micro_sec_loop
+;	RETURN
+	
+
+	
+	
+

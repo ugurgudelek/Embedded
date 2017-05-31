@@ -1,0 +1,182 @@
+NAMEREG s3, led_stat
+
+NAMEREG s1, duty_cycle_reg
+NAMEREG s2, direction_reg
+
+NAMEREG sA, delayA_reg
+NAMEREG sB, delayB_reg
+NAMEREG sC, delayC_reg
+
+NAMEREG sD, delay_reg
+NAMEREG sE, delay_usec_reg
+
+CONSTANT led_port,00
+
+
+LOAD duty_cycle_reg, 01
+LOAD direction_reg,FF
+JUMP main
+
+;==========SUBROUTINES=================
+
+; 255*255*190 ~= 12.5M
+; delay routine has 2 INST so 25M INST in total we have
+; 1INST = 2clock cycle so 50M clock cycle we have
+; device frequency is 100Mhz so that 50M clock took 0.5 sec.
+; half cycle took 0.5 sec => full cycle 1sec. :)
+delay_500msec:
+	LOAD delayA_reg,00  ;count FF - 00 = FF || 255'd
+	LOAD delayB_reg,00  ;count FF - 00 = FF || 255'd
+	LOAD delayC_reg,41  ;count FF - 41 = BE || 190'd
+	; delay_sec ~= (FF-delayA_reg)*(FF-delayB_reg)*(FF-delayC_reg)*2*2/100M sec
+	delay:
+		ADD delayA_reg, 01
+		JUMP NZ, 	    delay
+		ADD delayB_reg, 01
+		JUMP NZ, 	    delay
+		ADD delayC_reg, 01
+		JUMP NZ, 	    delay	
+		RETURN
+
+		
+; 50clk_cycle = 1u sec
+; 25INST = 50clk_cycle
+delay_1micro_sec:
+	LOAD delay_usec_reg,0C  ;12'd
+delay_1micro_sec_loop:
+	SUB delay_usec_reg,01
+	JUMP NZ, delay_1micro_sec_loop
+	RETURN
+
+
+delay_high_duty_cycle:
+	LOAD delay_reg, duty_cycle_reg
+	CALL delay_reg_loop
+	RETURN
+	
+delay_low_duty_cycle:
+	LOAD delay_reg, FF
+	SUB delay_reg,  duty_cycle_reg
+	CALL delay_reg_loop
+	RETURN
+
+; loop until delay_reg is zero
+;2 INST
+delay_reg_loop:	
+	SUB delay_reg,  01
+	JUMP NZ,	    delay_reg_loop
+	RETURN
+
+	
+;keep led off	
+led_off: 	 
+	LOAD led_stat, 00
+	OUTPUT led_stat, led_port
+	;CALL assign_low_duty_cycle
+	;CALL n_cycle_delay 						;call delay for waiting here
+	RETURN
+
+;keep led on	
+led_on: 	
+	LOAD led_stat, FF
+	OUTPUT led_stat, led_port
+	;CALL assign_high_duty_cycle
+	;CALL n_cycle_delay 						;call delay for waiting here
+	RETURN
+	
+led_on_wait:
+	CALL led_on
+	CALL delay_high_duty_cycle
+	RETURN
+	
+led_off_wait:
+	CALL led_off
+	CALL delay_low_duty_cycle
+	RETURN
+	
+;this is one period of duty cycled signal. 2*255 INST	
+one_period:
+	 
+	COMPARE duty_cycle_reg, 00
+	CALL NZ, led_on_wait  ;2*(duty_cycle_reg) INST
+	
+	
+	COMPARE duty_cycle_reg, FF
+	CALL NZ, led_off_wait ;2*(255-duty_cycle_reg) INST
+	
+	RETURN
+
+thread:
+	LOAD delayA_reg,00  ;count FF - 00 = FF || 255'd
+	LOAD delayB_reg,FB  ;count FF - 00 = FF || 255'd
+	LOAD delayC_reg,FF  ;count FF - 41 = BE || 190'd
+	thread_delay:
+	
+
+		CALL one_period ;this is one period of duty cycled signal. 50*255 INST
+	
+		ADD delayA_reg, 01
+		JUMP NZ, 	    thread_delay
+		ADD delayB_reg, 01
+		JUMP NZ, 	    thread_delay
+		ADD delayC_reg, 01
+		JUMP NZ, 	    thread_delay	
+		
+		;check for direction
+		COMPARE duty_cycle_reg, 00
+		CALL Z, change_direction; equal
+		COMPARE duty_cycle_reg, FF
+		CALL Z, change_direction; equal
+		
+		CALL calc_duty_cycle
+		
+		RETURN
+
+calc_duty_cycle:		
+		; if direction_reg says increment then increment, o.w decrement
+		COMPARE direction_reg, FF
+		JUMP Z, increment_duty_cycle; equal
+	decrement_duty_cycle: ;not equal
+			SUB duty_cycle_reg, 01
+			RETURN
+	increment_duty_cycle:
+			ADD duty_cycle_reg, 01
+			RETURN		
+		
+
+		
+
+		
+change_direction:
+		COMPARE direction_reg, FF
+		JUMP Z, direction_00 ; equal
+		;not equal
+		LOAD direction_reg,FF
+		RETURN
+	direction_00:
+			LOAD direction_reg,00
+			RETURN
+
+
+	
+;==========SUBROUTINES=================
+
+;============MAIN======================
+
+; one period of PWM
+; it takes 4u sec to complete
+main: 
+	
+	CALL thread ; 
+
+	JUMP main ;infinite loop
+	
+;============MAIN======================
+
+
+
+	
+
+	
+	
+
